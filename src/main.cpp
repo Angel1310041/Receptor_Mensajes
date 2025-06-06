@@ -2,76 +2,78 @@
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
 
-// Pines IR
-const uint16_t PIN_REFLECTOR = 48; // Reflector
-const uint16_t PIN_TIRA_LED = 47;  // Tira LED
+#define LED_PIN 35
 
-// Objetos IR
-IRsend irReflector(PIN_REFLECTOR);
-IRsend irTiraLed(PIN_TIRA_LED);
+// Pines asignados a reflectores (evitamos 45 y 46)
+const uint8_t reflectorPins[7] = {1, 2, 3, 4, 5, 6, 7};
+IRsend* irReflectores[7];  // Objetos IR individuales
 
-// Códigos IR del reflector (24 botones)
 const uint64_t controlReflector[24] = {
-  0xff906f, 0xffb847, 0xfff807, 0xffb04f,
-  0xff9867, 0xffd827, 0xff8877, 0xffa857,
-  0xffe817, 0xff48b7, 0xff6897, 0xffb24d,
-  0xff02fd, 0xff32cd, 0xff20df, 0xff00ff,
-  0xff50af, 0xff7887, 0xff708f, 0xff58a7,
-  0xff38c7, 0xff28d7, 0xfff00f, 0xff30cf
+  0xffa05f, 0xff20df, 0xff609f, 0xffe01f,
+  0xff906f, 0xff10ef, 0xff50af, 0xffd02f,
+  0xffb04f, 0xff30cf, 0xff708f, 0xfff00f,
+  0xffa857, 0xff28d7, 0xff6897, 0xffe817,
+  0xff9867, 0xff18e7, 0xff58a7, 0xffd827,
+  0xff8877, 0xff08f7, 0xff48b7, 0xffc837
 };
 
-// Códigos IR de la tira LED (24 botones)
-const uint64_t controlTiraLed[24] = {
-  0x77906f, 0x77b847, 0x77f807, 0x77b04f,
-  0x779867, 0x77d827, 0x778877, 0x77a857,
-  0x77e817, 0x7748b7, 0x776897, 0x77b24d,
-  0x7702fd, 0x7732cd, 0x7720df, 0x7700ff,
-  0x7750af, 0x777887, 0x77708f, 0x7758a7,
-  0x7738c7, 0x7728d7, 0x77f00f, 0x7730cf
-};
+void parpadearLed() {
+  digitalWrite(LED_PIN, HIGH);
+  delay(100);
+  digitalWrite(LED_PIN, LOW);
+}
 
 void setup() {
-  Serial.begin(115200);
-  Serial1.begin(9600, SERIAL_8N1, 46, 45);  // RX=46, TX=45
+  Serial.begin(9600);
+  Serial2.begin(9600, SERIAL_8N1, 46, 45);  // RX=46, TX=45
 
-  irReflector.begin();
-  irTiraLed.begin();
+  // Inicializar los emisores IR
+  for (int i = 0; i < 7; i++) {
+    irReflectores[i] = new IRsend(reflectorPins[i]);
+    irReflectores[i]->begin();
+    Serial.printf("Reflector %d configurado en pin %d\n", i + 1, reflectorPins[i]);
+  }
 
-  Serial.println("ESP32 receptor listo para reflector y tira LED...");
+  Serial.println("Receptor listo. Esperando comandos...");
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 }
 
 void loop() {
-  if (Serial1.available()) {
-    String mensaje = Serial1.readStringUntil('\n');
-    mensaje.trim();  // Elimina espacios y saltos de línea
-    Serial.print("Mensaje recibido: ");
-    Serial.println(mensaje);
+  if (Serial2.available()) {
+    String comando = Serial2.readStringUntil('\n');
+    comando.trim();
+    Serial.print("Comando recibido: ");
+    Serial.println(comando);
 
-    if (mensaje.startsWith("R")) {
-      int num = mensaje.substring(1).toInt();
-      if (num >= 1 && num <= 24) {
-        uint64_t codigo = controlReflector[num - 1];
-        irReflector.sendNEC(codigo, 32);
-        Serial.println("Código IR enviado al reflector.");
-      } else {
-        Serial.println("Número fuera de rango para reflector.");
-      }
-    }
-    else if (mensaje.startsWith("T")) {
-      int num = mensaje.substring(1).toInt();
-      if (num >= 1 && num <= 24) {
-        uint64_t codigo = controlTiraLed[num - 1];
-        irTiraLed.sendNEC(codigo, 32);
-        Serial.println("Código IR enviado a la tira LED.");
-      } else {
-        Serial.println("Número fuera de rango para tira LED.");
-      }
-    }
-    else {
-      Serial.println("Comando no reconocido. Usa R1-R24 o T1-T24.");
-    }
+    // Validar formato
+    if (comando.startsWith("LORA>R") && comando.length() >= 8) {
+      int reflectorID = comando.substring(6, 7).toInt();  // número 0–7
+      int funcion = comando.substring(7).toInt();         // número 1–24
 
-    // Confirmación
-    Serial1.println("Mensaje procesado correctamente");
+      if (reflectorID >= 0 && reflectorID <= 7 && funcion >= 1 && funcion <= 24) {
+        uint64_t codigoIR = controlReflector[funcion - 1];
+
+        if (reflectorID == 0) {
+          // Todos los reflectores
+          Serial.printf("Enviando función %d a TODOS los reflectores...\n", funcion);
+          for (int i = 0; i < 7; i++) {
+            irReflectores[i]->sendNEC(codigoIR);
+            parpadearLed();
+            delay(50);  // pequeño retardo entre envíos
+          }
+        } else {
+          // Uno específico
+          Serial.printf("Enviando función %d al reflector %d (pin %d)\n", 
+                        funcion, reflectorID, reflectorPins[reflectorID - 1]);
+          irReflectores[reflectorID - 1]->sendNEC(codigoIR);
+          parpadearLed();
+        }
+      } else {
+        Serial.println("Error: Números fuera de rango.");
+      }
+    } else {
+      Serial.println("Formato incorrecto. Usa: LORA>R[d][f]");
+    }
   }
 }
